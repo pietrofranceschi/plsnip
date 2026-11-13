@@ -1,0 +1,44 @@
+Package: plsnip
+Title: A 'pls' Engine for 'parsnip' Partial Least Squares Models
+Version: 0.1.0
+Authors@R: 
+    person("Pietro", "Franceschi", , "pietro.franceschi@fmach.it", role = c("aut", "cre"))
+Description: Registers the 'pls' package (Mevik and Wehrens, 2007,
+    <doi:10.18637/jss.v018.i02>) as an engine for the partial least squares
+    model 'parsnip::pls()', so that PLS regression and PLS discriminant
+    analysis (PLS-DA) can be used in 'tidymodels' workflows without
+    'mixOmics'. Class probabilities for PLS-DA are obtained from linear
+    discriminant analysis on the PLS scores (or, optionally, a softmax of the
+    predicted dummy responses). Predictions for every number of components
+    are obtained from a single fit, so tuning the number of components costs
+    one fit per resample.
+License: MIT + file LICENSE
+URL: https://github.com/pietrofranceschi/plsnip
+BugReports: https://github.com/pietrofranceschi/plsnip/issues
+Depends: 
+    parsnip (>= 1.2.0),
+    R (>= 4.1.0)
+Imports: 
+    MASS,
+    pls,
+    purrr,
+    rlang,
+    stats,
+    tibble,
+    utils
+Suggests: 
+    dials,
+    dplyr,
+    knitr,
+    recipes,
+    rmarkdown,
+    rsample,
+    testthat (>= 3.0.0),
+    tune,
+    workflows,
+    yardstick
+VignetteBuilder: knitr
+Config/testthat/edition: 3
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+Config/roxygen2/version: 8.1.0

@@ -1,0 +1,146 @@
+---
+title: "PLS regression and PLS-DA with tidymodels and the pls package"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{PLS regression and PLS-DA with tidymodels and the pls package}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>", fig.width = 6, fig.height = 4)
+have_tm <- all(vapply(c("tune", "workflows", "recipes", "rsample", "yardstick", "dials"),
+                      requireNamespace, logical(1), quietly = TRUE))
+knitr::opts_chunk$set(eval = have_tm)
+```
+
+**plsnip** adds the engine `"pls"` to `parsnip::pls()`. Models are fitted with
+the [pls](https://cran.r-project.org/package=pls) package, so they behave
+exactly like `pls::plsr()`, but they can be used in recipes, workflows,
+resampling and tuning. The engine is registered when the package is loaded.
+
+```{r setup, message = FALSE}
+library(plsnip)       # attaches parsnip
+library(recipes)
+library(workflows)
+library(rsample)
+library(tune)
+library(yardstick)
+library(dials)
+```
+
+Remember `set_engine("pls")`: the default engine of `pls()` is `"mixOmics"`.
+
+## Regression: octane from NIR spectra
+
+```{r}
+data(gasoline, package = "pls")
+gas <- data.frame(octane = gasoline$octane, unclass(gasoline$NIR))
+dim(gas)
+
+set.seed(1)
+split <- initial_split(gas, prop = 0.75)
+folds <- vfold_cv(training(split), v = 5)
+
+pls_reg <- pls(num_comp = tune()) |>
+  set_engine("pls") |>          # kernel PLS, predictors centred (not scaled)
+  set_mode("regression")
+
+wf_reg <- workflow(recipe(octane ~ ., data = gas), pls_reg)
+```
+
+`num_comp` is a *submodel* parameter: each resample is fitted once with the
+largest number of components and predictions for the smaller numbers come from
+the same fit, so a grid of 15 values costs 5 fits here. The default range of
+`dials::num_comp()` is 1–4, so give it a wider one.
+
+```{r}
+res_reg <- tune_grid(wf_reg, folds,
+                     grid = grid_regular(num_comp(range = c(1, 15)), levels = 15),
+                     metrics = metric_set(rmse, rsq),
+                     control = control_grid(save_pred = TRUE))
+show_best(res_reg, metric = "rmse", n = 3)
+autoplot(res_reg)
+```
+
+### Cross-validated Q² as in `pls`
+
+`collect_metrics()` averages each metric over the folds, and yardstick's `rsq`
+is a squared correlation. The Q² reported by `pls::R2(fit, estimate = "CV")`
+is instead pooled over all held-out predictions, `1 - PRESS / SS`. It can be
+computed from the saved predictions:
+
+```{r}
+q2 <- collect_predictions(res_reg) |>
+  dplyr::group_by(num_comp) |>
+  dplyr::summarise(rmsep = sqrt(mean((octane - .pred)^2)),
+                   q2 = 1 - sum((octane - .pred)^2) / sum((octane - mean(octane))^2))
+q2[q2$num_comp %in% 1:6, ]
+```
+
+### Final model
+
+```{r}
+final_reg <- finalize_workflow(wf_reg, select_best(res_reg, metric = "rmse")) |>
+  last_fit(split)
+collect_metrics(final_reg)
+```
+
+The engine object is an ordinary `mvr` object, so the pls tools work on it:
+
+```{r}
+mvr_fit <- extract_fit_engine(final_reg)
+class(mvr_fit)
+pls::explvar(mvr_fit)
+plot(seq(900, 1700, by = 2), coef(mvr_fit), type = "l",
+     xlab = "Wavelength (nm)", ylab = "Regression coefficient")
+```
+
+## Classification (PLS-DA): oil type of mayonnaise
+
+```{r}
+data(mayonnaise, package = "pls")
+mayo <- data.frame(oil = factor(paste0("oil", mayonnaise$oil.type)),
+                   unclass(mayonnaise$NIR))
+table(mayo$oil)
+```
+
+The outcome is coded as one dummy column per class and a single PLS2 model is
+fitted. Class probabilities come from LDA on the PLS scores (default,
+`prob_method = "lda"`) or from a softmax of the predicted dummies
+(`prob_method = "softmax"`, useful only for ranking metrics such as ROC AUC).
+
+```{r}
+pls_cls <- pls(num_comp = tune()) |>
+  set_engine("pls", prob_method = "lda") |>
+  set_mode("classification")
+
+set.seed(2)
+folds_cls <- vfold_cv(mayo, v = 5, strata = oil)
+res_cls <- tune_grid(workflow(recipe(oil ~ ., data = mayo), pls_cls), folds_cls,
+                     grid = data.frame(num_comp = 1:12),
+                     metrics = metric_set(accuracy, roc_auc, mn_log_loss))
+show_best(res_cls, metric = "accuracy", n = 3)
+```
+
+Predictions for several numbers of components from one fit:
+
+```{r}
+fit_cls <- pls(num_comp = 8) |>
+  set_engine("pls") |>
+  set_mode("classification") |>
+  fit(oil ~ ., data = mayo)
+predict(fit_cls, mayo[1:3, ], type = "prob")
+multi_predict(fit_cls, mayo[1, ], type = "class", num_comp = c(2, 4, 8))$.pred[[1]]
+```
+
+## Engine arguments
+
+* `method`: `"kernelpls"` (default), `"widekernelpls"`, `"simpls"`,
+  `"oscorespls"`.
+* `scale`: scale predictors to unit variance (default `FALSE`).
+* `prob_method`: `"lda"` (default) or `"softmax"`, classification only.
+* any other argument of `pls::mvr()`.
+
+`predictor_prop` (sparse PLS) is not available; use the `"mixOmics"` engine
+for that. See `?details_pls_pls` for details.
